@@ -53,8 +53,8 @@ SPI_HandleTypeDef hspi5;
 
 SDRAM_HandleTypeDef hsdram1;
 
-osThreadId defaultTaskHandle;
-osMessageQId myQueue01Handle;
+// osThreadId defaultTaskHandle;
+// osMessageQId myQueue01Handle;
 /* USER CODE BEGIN PV */
 int flag = 0;
 osThreadId pTaskHandle[5];
@@ -73,10 +73,10 @@ static void MX_I2C3_Init(void);
 static void MX_LTDC_Init(void);
 static void MX_SPI5_Init(void);
 static void MX_RNG_Init(void);
-void StartDefaultTask(void const * argument);
+//void StartDefaultTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
-
+void MyTask(void *);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -92,7 +92,8 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+  int i, j;
+  char num[15];
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -120,7 +121,39 @@ int main(void)
   MX_SPI5_Init();
   MX_RNG_Init();
   /* USER CODE BEGIN 2 */
-
+  BSP_LCD_Init();
+   BSP_LCD_LayerDefaultInit(1, LCD_FRAME_BUFFER); // Initialize layer 1
+   BSP_LCD_SelectLayer(1); // Set layer 1 as the foreground layer
+   BSP_LCD_Clear(LCD_COLOR_BLUE); // Clear LCD
+   BSP_LCD_SetColorKeying(1, LCD_COLOR_WHITE);
+   BSP_LCD_SetLayerVisible(1, DISABLE);
+   BSP_LCD_LayerDefaultInit(0, LCD_FRAME_BUFFER + 0x130000); // Initialize layer 0
+   BSP_LCD_SelectLayer(0); // Set layer 0 as foreground
+   BSP_LCD_DisplayOn();
+   BSP_LCD_Clear(LCD_COLOR_WHITE);
+   BSP_LCD_SetBackColor(LCD_COLOR_WHITE);
+   BSP_LCD_SetFont(&Font20);
+   for (i=0; i<5; i++)
+   {
+	   for (j=0; j<2; j++)
+	   {
+		   BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
+		   BSP_LCD_SetBackColor(LCD_COLOR_GREEN);
+		   BSP_LCD_FillRect(20+165*j,10+60*i,40,30);
+		   BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+		   BSP_LCD_DrawRect(20+165*j,10+60*i,40,30);
+		   sprintf(num,"%d",i);
+		   BSP_LCD_DisplayStringAt(35+165*j, 20+60*i,(uint8_t*) num, LEFT_MODE);
+	   }
+   }
+   for (i=5; i>0; i--)
+   {
+   BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+   BSP_LCD_SetBackColor(LCD_COLOR_WHITE);
+   sprintf(num,"%d", i);
+   BSP_LCD_DisplayStringAt(115, 50,(uint8_t*) num, LEFT_MODE);
+   HAL_Delay(1000);
+   }
   /* USER CODE END 2 */
 
   /* USER CODE BEGIN RTOS_MUTEX */
@@ -137,8 +170,8 @@ int main(void)
 
   /* Create the queue(s) */
   /* definition and creation of myQueue01 */
-  osMessageQDef(myQueue01, 50, uint8_t);
-  myQueue01Handle = osMessageCreate(osMessageQ(myQueue01), NULL);
+  //osMessageQDef(myQueue01, 50, uint8_t);
+  //myQueue01Handle = osMessageCreate(osMessageQ(myQueue01), NULL);
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
@@ -146,11 +179,18 @@ int main(void)
 
   /* Create the thread(s) */
   /* definition and creation of defaultTask */
-  osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 128);
-  defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
+  //osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 128);
+  //defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
+  for (i=0; i<5; i++) {
+   if (xTaskCreate((TaskFunction_t) MyTask, pTaskName[i],(uint16_t) 256,
+  &pTaskArg[i], pTaskPriority[i], (TaskHandle_t *) &pTaskHandle[i])!=pdPASS)
+   return -1;
+   if ((myQueueHandle[i]=xQueueCreate(10,4))==NULL)
+   return -1;
+   }
+
   /* USER CODE END RTOS_THREADS */
 
   /* Start scheduler */
@@ -536,6 +576,77 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
  {
  flag = 1;
  }
+}
+
+
+void MyTask(void *arg)
+{
+int i = (int)*((int *) arg);
+uint32_t x;
+char num[15];
+int right_red = 0;
+for(;;)
+{
+ // thread 4 checks for a flag and generates data to put into queue 0
+ if ((i==4)&&(flag)) {
+flag=0;
+if (HAL_RNG_GenerateRandomNumber(&hrng, (uint32_t *) &x) != HAL_OK)
+{
+/* Report random number generation error */
+Error_Handler();
+}
+x = x%5;
+BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+BSP_LCD_SetBackColor(LCD_COLOR_WHITE);
+sprintf(num,"RNG:%ld", x);
+BSP_LCD_DisplayStringAt(80, 50,(uint8_t*) num, LEFT_MODE);
+if( myQueueHandle[0] != 0 )
+{
+ /* Send an int. Wait for 10 ticks for space to become
+ available if necessary. */
+ if( xQueueSendToBack( myQueueHandle[0],
+ ( void * ) &x,
+ ( TickType_t ) 10 ) != pdPASS )
+ {
+ /* Failed to post the message, even after 10 ticks. */
+ }
+}
+ }
+ BSP_LCD_SetTextColor(LCD_COLOR_RED); // set left button to red while working
+ BSP_LCD_SetBackColor(LCD_COLOR_RED);
+  BSP_LCD_FillRect(20,10+60*i,40,30);
+  BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+  BSP_LCD_DrawRect(20,10+60*i,40,30);
+  sprintf(num,"%d",i);
+  BSP_LCD_DisplayStringAt(35, 20+60*i,(uint8_t*) num, LEFT_MODE);
+  if( xQueueReceive( myQueueHandle[i],
+  &x,
+ ( TickType_t ) 10 ) == pdPASS )
+  {
+  if (x==i) {
+  // remove message and toggle color of right RED/GREEN button
+  if (right_red) {
+  BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
+  BSP_LCD_SetBackColor(LCD_COLOR_GREEN);
+  right_red=0;
+  } else {
+  BSP_LCD_SetTextColor(LCD_COLOR_RED);
+  BSP_LCD_SetBackColor(LCD_COLOR_RED);
+  right_red=1;
+  }
+  } else {
+
+}
+ osDelay(500);
+ BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
+ BSP_LCD_SetBackColor(LCD_COLOR_GREEN);
+ BSP_LCD_FillRect(20,10+60*i,40,30);
+ BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+BSP_LCD_DrawRect(20,10+60*i,40,30);
+sprintf(num,"%d",i);
+ BSP_LCD_DisplayStringAt(35, 20+60*i,(uint8_t*) num, LEFT_MODE);
+ osDelay(500);
+}
 }
 /* USER CODE END 4 */
 
