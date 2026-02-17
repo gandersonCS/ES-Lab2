@@ -550,7 +550,30 @@ static void MX_GPIO_Init(void) {
 /* USER CODE BEGIN 4 */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 	if (GPIO_Pin == GPIO_PIN_0) {
-		flag = 1;
+			uint32_t x;
+			if (HAL_RNG_GenerateRandomNumber(&hrng, (uint32_t*) &x) != HAL_OK) {
+				/* Report random number generation error */
+				Error_Handler();
+			}
+			x = x % 5;
+			BaseType_t btt = pdFALSE;
+			//initializing basetype_t for xQueueSendToBAckFromISR
+//			BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+//			BSP_LCD_SetBackColor(LCD_COLOR_WHITE);
+//			sprintf(num, "RNG:%ld", x);
+//			BSP_LCD_DisplayStringAt(80, 50, (uint8_t*) num, LEFT_MODE);
+			if (myQueueHandle[x] != 0) {
+				//remove ticks
+				//replacement for old version of xqueuesendtoback
+				if ( xQueueSendToBackFromISR( myQueueHandle[x],
+						( void * ) &x,
+						&btt)) {
+
+				}
+			}
+			portYIELD_FROM_ISR(btt);
+			//for making higher priority tasks immediately run
+
 	}
 }
 
@@ -559,29 +582,18 @@ void MyTask(void *arg) {
 	uint32_t x;
 	char num[15];
 	int right_red = 0;
-	for (;;) {
-		// thread 4 checks for a flag and generates data to put into queue 0
-		if ((i == 4) && (flag)) {
-			flag = 0;
-			if (HAL_RNG_GenerateRandomNumber(&hrng, (uint32_t*) &x) != HAL_OK) {
-				/* Report random number generation error */
-				Error_Handler();
-			}
-			x = x % 5;
-			BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+	BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
 			BSP_LCD_SetBackColor(LCD_COLOR_WHITE);
 			sprintf(num, "RNG:%ld", x);
 			BSP_LCD_DisplayStringAt(80, 50, (uint8_t*) num, LEFT_MODE);
-			if (myQueueHandle[x] != 0) {
-				/* Send an int. Wait for 10 ticks for space to become
-				 available if necessary. */
-				if ( xQueueSendToBack( myQueueHandle[x],
-						( void * ) &x,
-						( TickType_t ) 10 ) != pdPASS) {
-					/* Failed to post the message, even after 10 ticks. */
-				}
-			}
-		}
+	for (;;) {
+
+//			x = x % 5;
+
+//
+//		}
+
+
 		BSP_LCD_SetTextColor(LCD_COLOR_RED); // set left button to red while working
 		BSP_LCD_SetBackColor(LCD_COLOR_RED);
 		BSP_LCD_FillRect(20, 10 + 60 * i, 40, 30);
@@ -589,8 +601,13 @@ void MyTask(void *arg) {
 		BSP_LCD_DrawRect(20, 10 + 60 * i, 40, 30);
 		sprintf(num, "%d", i);
 		BSP_LCD_DisplayStringAt(35, 20 + 60 * i, (uint8_t*) num, LEFT_MODE);
-		if (xQueueReceive(myQueueHandle[i], &x, (TickType_t) 10) == pdPASS) {
+		if (xQueueReceive(myQueueHandle[i], &x, portMAX_DELAY) == pdPASS) {
+			//makes the task not quarrel with lcd
 			if (x == i) {
+				BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+						BSP_LCD_SetBackColor(LCD_COLOR_WHITE);
+						sprintf(num, "RNG:%ld", x);
+						BSP_LCD_DisplayStringAt(80, 50, (uint8_t*) num, LEFT_MODE);
 				// remove message and toggle color of right RED/GREEN button
 				if (right_red) {
 					BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
@@ -604,7 +621,7 @@ void MyTask(void *arg) {
 			} else {
 
 			}
-			osDelay(500);
+			//osDelay(500);
 			BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
 			BSP_LCD_SetBackColor(LCD_COLOR_GREEN);
 			BSP_LCD_FillRect(20, 10 + 60 * i, 40, 30);
@@ -613,6 +630,7 @@ void MyTask(void *arg) {
 			sprintf(num, "%d", i);
 			BSP_LCD_DisplayStringAt(35, 20 + 60 * i, (uint8_t*) num, LEFT_MODE);
 			osDelay(500);
+			//commenting out delays for faster response time
 		}
 	}
 }
