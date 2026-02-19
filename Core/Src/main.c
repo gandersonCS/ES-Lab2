@@ -21,7 +21,9 @@
 #include "cmsis_os.h"
 #include "stm32f429i_discovery_lcd.h"
 #include "stm32f429i_discovery.h"
-#include <stdio.h>
+#include "stdio.h"
+#include "string.h"
+#include "semphr.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -60,11 +62,18 @@ SDRAM_HandleTypeDef hsdram1;
 // osMessageQId myQueue01Handle;
 /* USER CODE BEGIN PV */
 int flag = 0;
-osThreadId pTaskHandle[5];
-int pTaskArg[5] = { 0, 1, 2, 3, 4 };
-int pTaskPriority[5] = { 1, 2, 3, 4, 5 };
-const char pTaskName[5][3] = { "T0", "T1", "T2", "T3", "T4" };
-osMessageQId myQueueHandle[5];
+osThreadId pTaskHandle[2];
+int pTaskArg[2] = { 0, 1 };
+int pTaskPriority[2] = { 24, 25 };
+const char pTaskName[2][3] = { "T0", "T1" };
+osMessageQId myQueueHandle[2];
+TaskHandle_t HPT_Handle;
+TaskHandle_t MPT_Handle;
+TaskHandle_t LPT_Handle;
+SemaphoreHandle_t SimpleMutex;
+SemaphoreHandle_t BinSemaphore;
+SemaphoreHandle_t LcdMutex;
+SemaphoreHandle_t LcdMutex2;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -80,6 +89,9 @@ static void MX_RNG_Init(void);
 
 /* USER CODE BEGIN PFP */
 void MyTask(void*);
+void HPT_Task(void*);
+void MPT_Task(void*);
+void LPT_Task(void*);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -96,6 +108,30 @@ int main(void) {
 	/* USER CODE BEGIN 1 */
 	int i, j;
 	char num[15];
+
+	/*for (i = 0; i < 5; i++) {
+			for (j = 0; j < 2; j++) {
+				BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
+				BSP_LCD_SetBackColor(LCD_COLOR_GREEN);
+				BSP_LCD_FillRect(20 + 165 * j, 10 + 60 * i, 40, 30);
+				BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+				BSP_LCD_DrawRect(20 + 165 * j, 10 + 60 * i, 40, 30);
+				sprintf(num, "%d", i);
+				BSP_LCD_DisplayStringAt(35 + 165 * j, 20 + 60 * i, (uint8_t*) num,
+						LEFT_MODE);
+			}
+			// Add boxes for the lower-priority three tasks to indicate trying to enter CS
+			if (i > 1) {
+				BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
+				BSP_LCD_SetBackColor(LCD_COLOR_GREEN);
+				BSP_LCD_FillRect(105, 10 + 60 * i, 40, 30);
+				BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+				BSP_LCD_DrawRect(105, 10 + 60 * i, 40, 30);
+				sprintf(num, "%d", i);
+				BSP_LCD_DisplayStringAt(118, 20 + 60 * i, (uint8_t*) num,
+						LEFT_MODE);
+			}
+		}*/
 	/* USER CODE END 1 */
 
 	/* MCU Configuration--------------------------------------------------------*/
@@ -123,6 +159,8 @@ int main(void) {
 	MX_SPI5_Init();
 	MX_RNG_Init();
 	/* USER CODE BEGIN 2 */
+
+
 	BSP_LCD_Init();
 	BSP_LCD_LayerDefaultInit(1, LCD_FRAME_BUFFER); // Initialize layer 1
 	BSP_LCD_SelectLayer(1); // Set layer 1 as the foreground layer
@@ -156,12 +194,34 @@ int main(void) {
 	}
 	/* USER CODE END 2 */
 
+
 	/* USER CODE BEGIN RTOS_MUTEX */
-	/* add mutexes, ... */
+	SimpleMutex = xSemaphoreCreateMutex();
+	if (SimpleMutex == NULL) {
+		Error_Handler();
+	}
+
 	/* USER CODE END RTOS_MUTEX */
 
 	/* USER CODE BEGIN RTOS_SEMAPHORES */
-	/* add semaphores, ... */
+	BinSemaphore = xSemaphoreCreateBinary();
+	if (BinSemaphore == NULL) {
+		Error_Handler();
+	}
+	xSemaphoreGive(BinSemaphore); // change count to 1
+	LcdMutex = xSemaphoreCreateMutex();
+	if (LcdMutex == NULL) {
+		Error_Handler();
+	}
+
+	LcdMutex2 = xSemaphoreCreateMutex();
+	if (LcdMutex2 == NULL) {
+		Error_Handler();
+	}
+	// create tasks
+	xTaskCreate(HPT_Task, "HPT", 128, NULL, 23, &HPT_Handle);
+	xTaskCreate(MPT_Task, "MPT", 128, NULL, 22, &MPT_Handle);
+	xTaskCreate(LPT_Task, "LPT", 128, NULL, 21, &LPT_Handle);
 	/* USER CODE END RTOS_SEMAPHORES */
 
 	/* USER CODE BEGIN RTOS_TIMERS */
@@ -181,7 +241,7 @@ int main(void) {
 	//osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 128);
 	//defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
 	/* USER CODE BEGIN RTOS_THREADS */
-	for (i = 0; i < 5; i++) {
+	for (i = 0; i < 2; i++) {
 		if (xTaskCreate((TaskFunction_t) MyTask, pTaskName[i], (uint16_t) 256,
 				&pTaskArg[i], pTaskPriority[i],
 				(TaskHandle_t*) &pTaskHandle[i])!=pdPASS)
@@ -193,7 +253,8 @@ int main(void) {
 	/* USER CODE END RTOS_THREADS */
 
 	/* Start scheduler */
-	osKernelStart();
+	vTaskStartScheduler();
+	//changed from oskernelstart to vTaskStartScheduler as tasks were never running
 
 	/* We should never get here as control is now taken by the scheduler */
 
@@ -205,6 +266,7 @@ int main(void) {
 		/* USER CODE BEGIN 3 */
 	}
 	/* USER CODE END 3 */
+
 }
 
 /**
@@ -550,29 +612,28 @@ static void MX_GPIO_Init(void) {
 /* USER CODE BEGIN 4 */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 	if (GPIO_Pin == GPIO_PIN_0) {
-			uint32_t x;
-			if (HAL_RNG_GenerateRandomNumber(&hrng, (uint32_t*) &x) != HAL_OK) {
-				/* Report random number generation error */
-				Error_Handler();
-			}
-			x = x % 5;
-			BaseType_t btt = pdFALSE;
-			//initializing basetype_t for xQueueSendToBAckFromISR
+		flag = 1;
+		uint32_t x;
+		if (HAL_RNG_GenerateRandomNumber(&hrng, (uint32_t*) &x) != HAL_OK) {
+			/* Report random number generation error */
+			Error_Handler();
+		}
+		x = x % 2;
+		BaseType_t btt = pdFALSE;
+		//initializing basetype_t for xQueueSendToBAckFromISR
 //			BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
 //			BSP_LCD_SetBackColor(LCD_COLOR_WHITE);
 //			sprintf(num, "RNG:%ld", x);
 //			BSP_LCD_DisplayStringAt(80, 50, (uint8_t*) num, LEFT_MODE);
-			if (myQueueHandle[x] != 0) {
-				//remove ticks
-				//replacement for old version of xqueuesendtoback
-				if ( xQueueSendToBackFromISR( myQueueHandle[x],
-						( void * ) &x,
-						&btt)) {
+		if (myQueueHandle[x] != 0) {
+			//remove ticks
+			//replacement for old version of xqueuesendtoback
+			if (xQueueSendToBackFromISR(myQueueHandle[x], (void* ) &x, &btt)) {
 
-				}
 			}
-			portYIELD_FROM_ISR(btt);
-			//for making higher priority tasks immediately run
+		}
+		portYIELD_FROM_ISR(btt);
+		//for making higher priority tasks immediately run
 
 	}
 }
@@ -583,31 +644,36 @@ void MyTask(void *arg) {
 	char num[15];
 	int right_red = 0;
 	BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
-			BSP_LCD_SetBackColor(LCD_COLOR_WHITE);
-			sprintf(num, "RNG:%ld", x);
-			BSP_LCD_DisplayStringAt(80, 50, (uint8_t*) num, LEFT_MODE);
+	BSP_LCD_SetBackColor(LCD_COLOR_WHITE);
+	//sprintf(num, "RNG:%ld", x);
+	BSP_LCD_DisplayStringAt(80, 50, (uint8_t*) num, LEFT_MODE);
+
+	TickType_t xLastWakeTime;
+	// Define the desired period (e.g., 100ms)
+	const TickType_t xPeriod = pdMS_TO_TICKS(100); // Converts milliseconds to ticks
+	// 2. Initialize xLastWakeTime with the current tick count
+	xLastWakeTime = xTaskGetTickCount();
+	//amount of ticks that occurred since the scheduler started, current tick count
 	for (;;) {
-
-//			x = x % 5;
-
-//
-//		}
-
 
 		BSP_LCD_SetTextColor(LCD_COLOR_RED); // set left button to red while working
 		BSP_LCD_SetBackColor(LCD_COLOR_RED);
-		BSP_LCD_FillRect(20, 10 + 60 * i, 40, 30);
+		//BSP_LCD_FillRect(20, 10 + 60 * i, 40, 30);
 		BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
 		BSP_LCD_DrawRect(20, 10 + 60 * i, 40, 30);
 		sprintf(num, "%d", i);
 		BSP_LCD_DisplayStringAt(35, 20 + 60 * i, (uint8_t*) num, LEFT_MODE);
-		if (xQueueReceive(myQueueHandle[i], &x, portMAX_DELAY) == pdPASS) {
+
+		vTaskDelayUntil(&xLastWakeTime, xPeriod);
+		//periodic timing
+		if (xQueueReceive(myQueueHandle[i], &x, 0) == pdPASS) {
 			//makes the task not quarrel with lcd
+
 			if (x == i) {
 				BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
-						BSP_LCD_SetBackColor(LCD_COLOR_WHITE);
-						sprintf(num, "RNG:%ld", x);
-						BSP_LCD_DisplayStringAt(80, 50, (uint8_t*) num, LEFT_MODE);
+				BSP_LCD_SetBackColor(LCD_COLOR_WHITE);
+				sprintf(num, "RNG:%ld", x);
+				BSP_LCD_DisplayStringAt(80, 50, (uint8_t*) num, LEFT_MODE);
 				// remove message and toggle color of right RED/GREEN button
 				if (right_red) {
 					BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
@@ -629,7 +695,7 @@ void MyTask(void *arg) {
 			BSP_LCD_DrawRect(20, 10 + 60 * i, 40, 30);
 			sprintf(num, "%d", i);
 			BSP_LCD_DisplayStringAt(35, 20 + 60 * i, (uint8_t*) num, LEFT_MODE);
-			osDelay(500);
+			//osDelay(500);
 			//commenting out delays for faster response time
 		}
 	}
@@ -685,6 +751,217 @@ void Error_Handler(void) {
 	/* USER CODE END Error_Handler_Debug */
 }
 
+void HPT_Task(void *argument) {
+	int i;
+	char num[15];
+	TickType_t xLastWakeTime;
+	const TickType_t xPeriod = pdMS_TO_TICKS(2000); // Period = super slow 2 seconds
+	xLastWakeTime = xTaskGetTickCount();
+	while (1) {
+		vTaskDelay(pdMS_TO_TICKS(400)); // sleep for 200 ms
+// Two units of local work
+		int row = 0; // for HPT
+		int y = 130 + 60 * row;
+//determining the y position as all boxes draw over each other
+		for (i = 1; i <= 2; i++) {
+			BSP_LCD_SetTextColor(LCD_COLOR_RED);
+			BSP_LCD_SetBackColor(LCD_COLOR_RED);
+			BSP_LCD_FillRect(20, y, 40, 30);
+			BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+			BSP_LCD_DrawRect(20, y, 40, 30);
+			sprintf(num, "2");
+			BSP_LCD_DisplayStringAt(35, 140, (uint8_t*) num, LEFT_MODE);
+			vTaskDelay(pdMS_TO_TICKS(100)); // sleep for 100 ms
+			BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
+			BSP_LCD_SetBackColor(LCD_COLOR_GREEN);
+			BSP_LCD_FillRect(20, y, 40, 30);
+			BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+			BSP_LCD_DrawRect(20, y, 40, 30);
+			sprintf(num, "2");
+			BSP_LCD_DisplayStringAt(35, y, (uint8_t*) num, LEFT_MODE);
+			vTaskDelay(pdMS_TO_TICKS(100)); // sleep for 100 ms
+		}
+// Try to obtain mutex semaphore
+		BSP_LCD_SetTextColor(LCD_COLOR_RED);
+		BSP_LCD_SetBackColor(LCD_COLOR_RED);
+		BSP_LCD_FillRect(105, y, 40, 30);
+		BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+		BSP_LCD_DrawRect(105, y, 40, 30); // 10+60i = 130, j=20, 105, 185
+		sprintf(num, "P");
+		BSP_LCD_DisplayStringAt(120, y, (uint8_t*) num, LEFT_MODE);
+		xSemaphoreTake(SimpleMutex, portMAX_DELAY);
+		//xSemaphoreTake(LcdMutex2, portMAX_DELAY);
+		//2nd lcdmutex to help stop flickering
+// Enter critical section
+		BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
+		BSP_LCD_SetBackColor(LCD_COLOR_GREEN);
+		BSP_LCD_FillRect(105, y, 40, 30);
+		BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+		BSP_LCD_DrawRect(105, y, 40, 30); // 10+60i = 130, j=20, 105, 185
+		sprintf(num, "2");
+		BSP_LCD_DisplayStringAt(120, 140, (uint8_t*) num, LEFT_MODE);
+		BSP_LCD_SetTextColor(LCD_COLOR_RED);
+		BSP_LCD_SetBackColor(LCD_COLOR_RED);
+		BSP_LCD_FillRect(185, y, 40, 30);
+		BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+		BSP_LCD_DrawRect(185, y, 40, 30); // 10+60i = 130, j=20, 105, 185
+		sprintf(num, "C");
+		BSP_LCD_DisplayStringAt(200, y, (uint8_t*) num, LEFT_MODE);
+		vTaskDelay(pdMS_TO_TICKS(300)); // in CS for 300 ms
+		xSemaphoreGive(SimpleMutex);
+		//xSemaphoreGive(LcdMutex2);
+// Leave critical section
+		BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
+		BSP_LCD_SetBackColor(LCD_COLOR_GREEN);
+		BSP_LCD_FillRect(185, y, 40, 30);
+		BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+		BSP_LCD_DrawRect(185, y, 40, 30);
+		sprintf(num, "2");
+		BSP_LCD_DisplayStringAt(200, y, (uint8_t*) num, LEFT_MODE);
+// Wait for period to expire
+		vTaskDelayUntil(&xLastWakeTime, xPeriod);
+	}
+}
+
+void MPT_Task(void *argument) {
+	int i;
+	char num[15];
+	TickType_t xLastWakeTime;
+	const TickType_t xPeriod = pdMS_TO_TICKS(1000); // Period = super slow 2 seconds
+	xLastWakeTime = xTaskGetTickCount();
+	while (1) {
+		vTaskDelay(pdMS_TO_TICKS(200)); // sleep for 200 ms
+// Two units of local work
+		int row = 1; // for MPT
+		int y = 130 + 60 * row;
+//determining the y position as all boxes draw over each other
+		for (i = 1; i <= 10; i++) {
+			BSP_LCD_SetTextColor(LCD_COLOR_RED);
+			BSP_LCD_SetBackColor(LCD_COLOR_RED);
+			BSP_LCD_FillRect(20, y, 40, 30);
+			BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+			BSP_LCD_DrawRect(20, y, 40, 30);
+			sprintf(num, "2");
+			BSP_LCD_DisplayStringAt(35, y, (uint8_t*) num, LEFT_MODE);
+			vTaskDelay(pdMS_TO_TICKS(100)); // sleep for 100 ms
+			BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
+			BSP_LCD_SetBackColor(LCD_COLOR_GREEN);
+			BSP_LCD_FillRect(20, y, 40, 30);
+			BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+			BSP_LCD_DrawRect(20, y, 40, 30);
+			sprintf(num, "2");
+			BSP_LCD_DisplayStringAt(35, y, (uint8_t*) num, LEFT_MODE);
+			vTaskDelay(pdMS_TO_TICKS(100)); // sleep for 100 ms
+		}
+// Try to obtain mutex semaphore
+		BSP_LCD_SetTextColor(LCD_COLOR_RED);
+		BSP_LCD_SetBackColor(LCD_COLOR_RED);
+		BSP_LCD_FillRect(105, y, 40, 30);
+		BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+		BSP_LCD_DrawRect(105, y, 40, 30); // 10+60i = 130, j=20, 105, 185
+		sprintf(num, "P");
+		BSP_LCD_DisplayStringAt(120, y, (uint8_t*) num, LEFT_MODE);
+		//xSemaphoreTake(SimpleMutex, portMAX_DELAY);
+		//xSemaphoreTake(LcdMutex2, portMAX_DELAY);
+// Enter critical section
+		BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
+		BSP_LCD_SetBackColor(LCD_COLOR_GREEN);
+		BSP_LCD_FillRect(105, y, 40, 30);
+		BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+		BSP_LCD_DrawRect(105, y, 40, 30); // 10+60i = 130, j=20, 105, 185
+		sprintf(num, "2");
+		BSP_LCD_DisplayStringAt(120, y, (uint8_t*) num, LEFT_MODE);
+		BSP_LCD_SetTextColor(LCD_COLOR_RED);
+		BSP_LCD_SetBackColor(LCD_COLOR_RED);
+		BSP_LCD_FillRect(185, y, 40, 30);
+		BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+		BSP_LCD_DrawRect(185, y, 40, 30); // 10+60i = 130, j=20, 105, 185
+		sprintf(num, "C");
+		BSP_LCD_DisplayStringAt(200, y, (uint8_t*) num, LEFT_MODE);
+		vTaskDelay(pdMS_TO_TICKS(300)); // in CS for 300 ms
+		//xSemaphoreGive(SimpleMutex);
+		//xSemaphoreGive(LcdMutex2);
+// Leave critical section
+		BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
+		BSP_LCD_SetBackColor(LCD_COLOR_GREEN);
+		BSP_LCD_FillRect(185, y, 40, 30);
+		BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+		BSP_LCD_DrawRect(185, y, 40, 30);
+		sprintf(num, "2");
+		BSP_LCD_DisplayStringAt(200, y, (uint8_t*) num, LEFT_MODE);
+// Wait for period to expire
+		vTaskDelayUntil(&xLastWakeTime, xPeriod);
+	}
+}
+
+void LPT_Task(void *argument) {
+	int i;
+	char num[15];
+	TickType_t xLastWakeTime;
+	const TickType_t xPeriod = pdMS_TO_TICKS(2000); // Period = super slow 2 seconds
+	xLastWakeTime = xTaskGetTickCount();
+	while (1) {
+		vTaskDelay(pdMS_TO_TICKS(50)); // sleep for 200 ms
+// Two units of local work
+		int row = 2; // for LPT
+		int y = 130 + 60 * row;
+//determining the y position as all boxes draw over each other
+		for (i=1; i<=10; i++) {
+		vTaskDelay(pdMS_TO_TICKS(100)); // in CS for 1000 ms total
+		xSemaphoreTake(LcdMutex, portMAX_DELAY);
+		//xSemaphoreTake(LcdMutex2, portMAX_DELAY);
+		sprintf(num, "PRIORITY: %ld", uxTaskPriorityGet(NULL));
+		//changed l[t_handle to null since priotity number wasn't switching from 21, forever stuck on low priority
+		BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+		BSP_LCD_SetBackColor(LCD_COLOR_WHITE);
+		BSP_LCD_DisplayStringAt(35,290,(uint8_t*) num, LEFT_MODE);
+		xSemaphoreGive(LcdMutex);
+		//xSemaphoreGive(LcdMutex2);
+		//changing from simple to lcd didn't change the priority but the screen is a lot less flickery and you can see different and
+		//clear changes. For example, priority box now changes to green sometimes and you can clearly notice the letters
+		//replace boxes instead of quickly showing up and disappering
+		}
+// Try to obtain mutex semaphore
+		BSP_LCD_SetTextColor(LCD_COLOR_RED);
+		BSP_LCD_SetBackColor(LCD_COLOR_RED);
+		BSP_LCD_FillRect(105, y, 40, 30);
+		BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+		BSP_LCD_DrawRect(105, y, 40, 30); // 10+60i = 130, j=20, 105, 185
+		sprintf(num, "P");
+		BSP_LCD_DisplayStringAt(120, y, (uint8_t*) num, LEFT_MODE);
+		xSemaphoreTake(SimpleMutex, portMAX_DELAY);
+		//xSemaphoreTake(LcdMutex2, portMAX_DELAY);
+// Enter critical section
+		BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
+		BSP_LCD_SetBackColor(LCD_COLOR_GREEN);
+		BSP_LCD_FillRect(105, y, 40, 30);
+		BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+		BSP_LCD_DrawRect(105, y, 40, 30); // 10+60i = 130, j=20, 105, 185
+		sprintf(num, "2");
+		BSP_LCD_DisplayStringAt(120, y, (uint8_t*) num, LEFT_MODE);
+		BSP_LCD_SetTextColor(LCD_COLOR_RED);
+		BSP_LCD_SetBackColor(LCD_COLOR_RED);
+		BSP_LCD_FillRect(185, y, 40, 30);
+		BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+		BSP_LCD_DrawRect(185, y, 40, 30); // 10+60i = 130, j=20, 105, 185
+		sprintf(num, "C");
+		BSP_LCD_DisplayStringAt(200, y, (uint8_t*) num, LEFT_MODE);
+		//vTaskDelay(pdMS_TO_TICKS(300)); // in CS for 300 ms
+		for (volatile uint32_t j = 0; j < 8000000; j++);
+		xSemaphoreGive(SimpleMutex);
+		//xSemaphoreGive(LcdMutex2);
+// Leave critical section
+		BSP_LCD_SetTextColor(LCD_COLOR_GREEN);
+		BSP_LCD_SetBackColor(LCD_COLOR_GREEN);
+		BSP_LCD_FillRect(185, y, 40, 30);
+		BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+		BSP_LCD_DrawRect(185, y, 40, 30);
+		sprintf(num, "2");
+		BSP_LCD_DisplayStringAt(200, y, (uint8_t*) num, LEFT_MODE);
+// Wait for period to expire
+		vTaskDelayUntil(&xLastWakeTime, xPeriod);
+	}
+}
 #ifdef USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
